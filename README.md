@@ -1,6 +1,4 @@
-![CI](https://github.com/cyb3r-cych0/CychoB0T/actions/workflows/ci.yml/badge.svg)
-![License](https://img.shields.io/github/license/cyb3r-cych0/CychoB0T/)
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Status](https://img.shields.io/badge/status-stable-green)
 ![Security](https://img.shields.io/badge/security-runtime--only-critical)
 ![Offline](https://img.shields.io/badge/offline--first-yes-success)
