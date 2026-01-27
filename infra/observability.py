@@ -33,11 +33,11 @@ def log_response_generated(conversation_id, engine, latency_ms):
     )
 
 
-def log_online_fallback(error):
-    logger.exception(
+def log_online_fallback(reason: str):
+    logger.warning(
         "online_engine_failed_fallback",
         extra={
-            "error_type": type(error).__name__
+            "reason": reason
         }
     )
 

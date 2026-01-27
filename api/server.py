@@ -35,6 +35,18 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+from infra.settings import OFFLINE_BACKEND, MAX_CONCURRENT_REQUESTS
+from infra.metrics import metrics
+
+limit = 1 if OFFLINE_BACKEND == "embedded" else MAX_CONCURRENT_REQUESTS
+
+metrics.set("offline_concurrency_limit", limit)
+metrics.set(
+    "offline_backend_mode",
+    1 if OFFLINE_BACKEND == "embedded" else 2
+)
+
+
 
 @app.get("/health")
 def health():

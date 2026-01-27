@@ -8,7 +8,7 @@ HEADERS = {
 }
 
 payload = {
-    "message": "Explain ransomware in one sentence",
+    "message": "Explain Keyloggers in one sentence",
     "conversation_id": "latency-test",
     "user_mode": "auto",
     "privacy_mode": "strict",

@@ -2,8 +2,8 @@ from rag.vector_store import SQLiteVectorStore
 from rag.embeddings import EmbeddingModel
 
 docs = [
-    "Ransomware encrypts files and demands payment.",
-    "Backups are critical for ransomware recovery."
+    "keyloggers scans user's keystrokes on the keyboard",
+    "python is a good programming language to make keylogger scripts"
 ]
 
 vs = SQLiteVectorStore()

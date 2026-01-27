@@ -4,8 +4,10 @@ def env(key: str, default):
     return os.getenv(key, default)
 
 # Version
-TITLE = env("TITLE", "CychoB0T_offline–online_LLM ")
+TITLE = env("TITLE", "CychoB0T-uncensored ")
 VERSION = env("VERSION", "v0.1.0")
+
+OFFLINE_BACKEND = os.getenv("OFFLINE_BACKEND", "embedded") # values: "embedded" | "server"
 
 # URLs
 ONLINE_URL = env("ONLINE_URL", "http://127.0.0.1:9999")
