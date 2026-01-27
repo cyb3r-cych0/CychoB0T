@@ -1,17 +1,18 @@
 import time
 from fastapi import HTTPException
 
-from infra.connectivity import ConnectivityService
-from engines.offline_llm import OfflineLLM
-from engines.online_llm import OnlineLLM
 from memory.sqlite_store import SQLiteMemoryStore
 from memory.short_term import ShortTermMemory
-from security.pii import redact_pii
+from infra.connectivity import ConnectivityService
 from infra.circuit_breaker import CircuitBreaker
 from infra.concurrency import ConcurrencyLimiter
 from infra.runtime import shutdown_event
 from infra.metrics import metrics
 from infra.audit import log_audit_event
+from infra.sanitize import sanitize_prompt
+from infra.retry import OnlineEngineUnavailable
+from engines.online_llm import OnlineLLM
+from engines.offline_factory import get_offline_engine
 
 
 from infra.settings import (
@@ -22,25 +23,27 @@ from infra.settings import (
         RAG_TOP_K,
         RAG_MAX_CHARS
     )
-
 from infra.observability import (
     log_request_received,
     log_engine_selected,
     log_response_generated,
     log_online_fallback,
     log_input_rejected,
-    log_latency,
+    log_latency
 )
+from security.pii import redact_pii
 
 
 class Router:
     def __init__(self):
-        self.offline = OfflineLLM()
+        self.offline = get_offline_engine()
         self.online = OnlineLLM()
         self.store = SQLiteMemoryStore()
         self.short = ShortTermMemory()
         self.circuit = CircuitBreaker()
-        self.limiter = ConcurrencyLimiter(max_concurrent=MAX_CONCURRENT_REQUESTS)
+        self.limiter = ConcurrencyLimiter(
+            max_concurrent=MAX_CONCURRENT_REQUESTS
+        )
         self.enable_rag = ENABLE_RAG
 
         if self.enable_rag:
@@ -54,10 +57,8 @@ class Router:
             self.retriever = Retriever(self.vstore)
             self._augment_prompt = augment_prompt
 
-
-
-
     def route(self, request):
+        # metrics + shutdown
         metrics.inc("requests_total")
 
         if shutdown_event.is_set():
@@ -66,11 +67,13 @@ class Router:
                 conversation_id=request.conversation_id,
                 engine="system",
                 latency_ms=0,
-                status="shutdown"
+                status="shutdown",
             )
-            raise HTTPException(status_code=503, detail="Server shutting down")
+            raise HTTPException(
+                status_code=503,
+                detail="Server shutting down"
+            )
 
-        # logging
         start = time.time()
 
         log_request_received(
@@ -78,21 +81,20 @@ class Router:
             request.user_mode
         )
 
-        # Reset short-term memory on new conversation
-        if self.short.conversation_id != request.conversation_id:
-            self.short.reset(request.conversation_id)
-
-        # raw user message check
-        if not isinstance(request.message, str):
-            log_input_rejected("non_text_message")
+        # validation
+        if not request.message or not isinstance(request.message, str):
+            log_input_rejected("empty_or_non_text")
             metrics.inc("errors_total")
             log_audit_event(
                 conversation_id=request.conversation_id,
                 engine="none",
                 latency_ms=0,
-                status="rejected"
+                status="rejected",
             )
-            raise HTTPException(status_code=422, detail="Message must be text")
+            raise HTTPException(
+                status_code=422,
+                detail="Message must be non-empty text"
+            )
 
         if request.prompt_length > MAX_PROMPT_CHARS:
             log_input_rejected("prompt_too_long")
@@ -101,26 +103,34 @@ class Router:
                 conversation_id=request.conversation_id,
                 engine="none",
                 latency_ms=0,
-                status="rejected"
+                status="rejected",
             )
-            raise HTTPException(status_code=413, detail=f"Prompt exceeds {MAX_PROMPT_CHARS} characters")
+            raise HTTPException(
+                status_code=413,
+                detail=f"Prompt exceeds {MAX_PROMPT_CHARS} characters"
+            )
 
+        # conversation setup
         self.store.ensure_conversation(request.conversation_id)
 
-        # build context-enhanced prompt
+        if self.short.conversation_id != request.conversation_id:
+            self.short.reset(request.conversation_id)
+
+        raw_user_message = request.message
+
+        # prompt build
         request.message = self.short.build_prompt(request.message)
 
-        # Redact PII before storage
+        # privacy + store user message
         content_to_store = request.message
         if request.privacy_mode == "strict":
             content_to_store = redact_pii(content_to_store)
 
-        # persist user message
         self.store.add_message(
             conversation_id=request.conversation_id,
             role="user",
             content=content_to_store,
-            engine="user"
+            engine="user",
         )
 
         # Optional RAG augmentation
@@ -143,25 +153,12 @@ class Router:
             request.message = request.message[-MAX_CONTEXT_CHARS:]
 
         # routing + fallback
-        with self.limiter:
-            if request.user_mode == "offline_only" or not ConnectivityService.is_online():
-                try:
-                    response = self.offline.generate(request)
-                    metrics.inc("engine_offline")
-                except Exception:
-                    metrics.inc("errors_total")
-                    log_audit_event(
-                        conversation_id=request.conversation_id,
-                        engine="none",
-                        latency_ms=0,
-                        status="rejected"
-                    )
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Offline model unavailable"
-                    )
-            else:
-                if not self.circuit.allow():
+        try:
+            with self.limiter:
+                if (
+                    request.user_mode == "offline_only"
+                    or not ConnectivityService.is_online()
+                ):
                     try:
                         response = self.offline.generate(request)
                         metrics.inc("engine_offline")
@@ -169,21 +166,16 @@ class Router:
                         metrics.inc("errors_total")
                         log_audit_event(
                             conversation_id=request.conversation_id,
-                            engine="none",
+                            engine="offline",
                             latency_ms=0,
-                            status="rejected"
+                            status="failed",
                         )
                         raise HTTPException(
                             status_code=503,
                             detail="Offline model unavailable"
                         )
                 else:
-                    try:
-                        response = self.online.generate(request)
-                        self.circuit.success()
-                        metrics.inc("engine_online")
-                    except Exception:
-                        self.circuit.failure()
+                    if not self.circuit.allow():
                         try:
                             response = self.offline.generate(request)
                             metrics.inc("engine_offline")
@@ -191,59 +183,79 @@ class Router:
                             metrics.inc("errors_total")
                             log_audit_event(
                                 conversation_id=request.conversation_id,
-                                engine="none",
+                                engine="offline",
                                 latency_ms=0,
-                                status="rejected"
+                                status="failed",
                             )
                             raise HTTPException(
                                 status_code=503,
                                 detail="Offline model unavailable"
                             )
-        # logging
-        try:
-            log_engine_selected("offline")
+                    else:
+                        try:
+                            response = self.online.generate(request)
+                            self.circuit.success()
+                            metrics.inc("engine_online")
+                        except Exception:
+                            self.circuit.failure()
+                            log_online_fallback("online_engine_unreachable")
+                            try:
+                                response = self.offline.generate(request)
+                                metrics.inc("engine_offline")
+                            except Exception:
+                                metrics.inc("errors_total")
+                                log_audit_event(
+                                    conversation_id=request.conversation_id,
+                                    engine="offline",
+                                    latency_ms=0,
+                                    status="failed",
+                                )
+                                raise HTTPException(
+                                    status_code=503,
+                                    detail="Offline model unavailable"
+                                )
+        except RuntimeError as e:
+            if str(e) == "model_busy":
+                metrics.inc("errors_total")
+                metrics.inc("offline_model_busy")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Offline model is busy. Please wait and try again."
+                )
+            raise
 
-        except Exception as e:
-            log_online_fallback(e)
-            response = self.offline.generate(request)
-
+        # post response
         latency = int((time.time() - start) * 1000)
         metrics.observe("latency_ms", latency)
 
-        log_latency(
-            response.engine,
-            latency
-        )
-
+        log_engine_selected(response.engine)
+        log_latency(response.engine, latency)
         log_response_generated(
             request.conversation_id,
             response.engine,
-            latency
+            latency,
         )
 
-        # The user still receives the original response. Only storage is sanitized.
-        assistant_content = response.text
-
+        assistant_content = sanitize_prompt(response.text)
         if request.privacy_mode == "strict":
             assistant_content = redact_pii(assistant_content)
 
-        # persist assistant message
         self.store.add_message(
             conversation_id=request.conversation_id,
             role="assistant",
             content=assistant_content,
-            engine=response.engine
+            engine=response.engine,
         )
 
-        # update short-term buffer
-        self.short.add("user", request.message)
+        # update short-term buffer: use RAW user message, not augmented prompt
+        self.short.add("user", raw_user_message)
         self.short.add("assistant", response.text)
 
         log_audit_event(
             conversation_id=request.conversation_id,
             engine=response.engine,
             latency_ms=latency,
-            status="success"
+            status="success",
         )
 
         return response
