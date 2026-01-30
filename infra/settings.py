@@ -55,3 +55,6 @@ RAG_MAX_CHARS = int(env("RAG_MAX_CHARS", 2000))
 
 # memory decay - # This gives ~50% weight after ~4 hours.
 MEMORY_DECAY_LAMBDA = float(env("MEMORY_DECAY_LAMBDA", 0.00005))
+
+# llama verbosity
+LLAMA_VERBOSE = False          # default: silent

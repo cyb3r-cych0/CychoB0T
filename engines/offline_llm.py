@@ -1,44 +1,33 @@
-import time
-import requests
-from core.interfaces import LLMEngine
-from core.schemas import ChatRequest, ChatResponse
-from infra.settings import OFFLINE_URL, OFFLINE_TIMEOUT
+from llama_cpp import Llama
+from core.schemas import ChatResponse
+from infra.settings import LLAMA_VERBOSE
 
 
-class OfflineLLM(LLMEngine):
+class OfflineLLM:
+    def __init__(self, model_path: str, n_ctx: int):
+        self.model_path = model_path
+        self.n_ctx = n_ctx
 
-    def generate(self, request: ChatRequest) -> ChatResponse:
-        start = time.time()
-
-        payload = {
-            "prompt": f"<s>[INST] {request.message} [/INST]",
-            "n_predict": 256,
-            "temperature": 0.7,
-            "top_p": 0.9
-        }
-
-        r = requests.post(
-            OFFLINE_URL,
-            json=payload,
-            timeout=OFFLINE_TIMEOUT
+        self.llm = Llama(
+            model_path=model_path,
+            n_ctx=n_ctx,
+            n_threads=8,
+            n_batch=512,
+            verbose=LLAMA_VERBOSE,
         )
 
-        latency = int((time.time() - start) * 1000)
-
-        #  response format
-        data = r.json()
-
-        if "content" in data:
-            text = data["content"]
-        elif "choices" in data and len(data["choices"]) > 0:
-            text = data["choices"][0].get("text", "")
-        else:
-            text = r.text  # last-resort fallback
+    def generate(self, request, *, max_tokens: int, temperature: float):
+        output = self.llm(
+            prompt=request.message,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=["</s>"],
+        )
 
         return ChatResponse(
-            text=text,
+            text=output["choices"][0]["text"].strip(),
             engine="offline",
-            model="mistral-7b-instruct",
-            latency_ms=latency,
-            tokens_used=None
+            model=self.model_path.split("/")[-1],
+            latency_ms=0,
+            tokens_used=None,
         )

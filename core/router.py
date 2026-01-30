@@ -3,15 +3,13 @@ from fastapi import HTTPException
 
 from memory.sqlite_store import SQLiteMemoryStore
 from memory.short_term import ShortTermMemory
-from infra.connectivity import ConnectivityService
 from infra.circuit_breaker import CircuitBreaker
 from infra.concurrency import ConcurrencyLimiter
 from infra.runtime import shutdown_event
 from infra.metrics import metrics
 from infra.audit import log_audit_event
 from infra.sanitize import sanitize_prompt
-from engines.online_llm import OnlineLLM
-from engines.offline_factory import get_offline_engine
+from engines.factory import EngineFactory
 from models.registry import get_profile
 
 from infra.settings import (
@@ -26,7 +24,6 @@ from infra.observability import (
     log_request_received,
     log_engine_selected,
     log_response_generated,
-    log_online_fallback,
     log_input_rejected,
     log_latency
 )
@@ -35,8 +32,6 @@ from security.pii import redact_pii
 
 class Router:
     def __init__(self):
-        self.offline = get_offline_engine
-        self.online = OnlineLLM()
         self.store = SQLiteMemoryStore()
         self.short = ShortTermMemory()
         self.circuit = CircuitBreaker()
@@ -44,6 +39,8 @@ class Router:
             max_concurrent=MAX_CONCURRENT_REQUESTS
         )
         self.enable_rag = ENABLE_RAG
+        self.engine_factory = EngineFactory()
+
 
         if self.enable_rag:
             from rag.embeddings import EmbeddingModel
@@ -128,23 +125,6 @@ class Router:
                 )
             )
 
-        # conversation setup + validation
-        # self.store.ensure_conversation(
-        #     request.conversation_id,
-        #     request.model_profile_id
-        # )
-        stored_profile_id = self.store.get_model_profile_id(request.conversation_id)
-        profile = get_profile(stored_profile_id)
-
-        if stored_profile_id != request.model_profile_id:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Model profile is locked for this conversation. "
-                    "Start a new conversation to change models."
-                )
-            )
-
         if self.short.conversation_id != request.conversation_id:
             self.short.reset(request.conversation_id)
 
@@ -185,77 +165,31 @@ class Router:
             request.message = request.message[-MAX_CONTEXT_CHARS:]
 
         # routing + fallback
-        try:
-            with self.limiter:
-                offline_engine = self.offline(profile)
-                if (
-                    request.user_mode == "offline_only"
-                    or not ConnectivityService.is_online()
-                ):
-                    try:
-                        response = offline_engine.generate(request, profile)
-                        metrics.inc("engine_offline")
-                    except Exception:
-                        metrics.inc("errors_total")
-                        log_audit_event(
-                            conversation_id=request.conversation_id,
-                            engine="offline",
-                            latency_ms=0,
-                            status="failed",
-                        )
-                        raise HTTPException(
-                            status_code=503,
-                            detail="Offline model unavailable"
-                        )
-                else:
-                    if not self.circuit.allow():
-                        try:
-                            response = offline_engine.generate(request, profile)
-                            metrics.inc("engine_offline")
-                        except Exception:
-                            metrics.inc("errors_total")
-                            log_audit_event(
-                                conversation_id=request.conversation_id,
-                                engine="offline",
-                                latency_ms=0,
-                                status="failed",
-                            )
-                            raise HTTPException(
-                                status_code=503,
-                                detail="Offline model unavailable"
-                            )
-                    else:
-                        try:
-                            response = self.online.generate(request)
-                            self.circuit.success()
-                            metrics.inc("engine_online")
-                        except Exception:
-                            self.circuit.failure()
-                            log_online_fallback("online_engine_unreachable")
-                            try:
-                                response = offline_engine.generate(request, profile)
-                                metrics.inc("engine_offline")
-                            except Exception:
-                                metrics.inc("errors_total")
-                                log_audit_event(
-                                    conversation_id=request.conversation_id,
-                                    engine="offline",
-                                    latency_ms=0,
-                                    status="failed",
-                                )
-                                raise HTTPException(
-                                    status_code=503,
-                                    detail="Offline model unavailable"
-                                )
-        except RuntimeError as e:
-            if str(e) == "model_busy":
-                metrics.inc("errors_total")
-                metrics.inc("offline_model_busy")
-                raise HTTPException(
-                    status_code=503,
-                    detail="Offline model is busy. Please wait and try again."
+        stored_profile_id = self.store.get_model_profile_id(request.conversation_id)
+
+        if stored_profile_id != request.model_profile_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Model profile is locked for this conversation. "
+                    "Start a new conversation to change models."
                 )
-            raise
+            )
+
+        profile = get_profile(stored_profile_id)
+        handle = self.engine_factory.get(stored_profile_id)
+
+        with handle.limiter:
+            start_engine = time.time()
+            response = handle.engine.generate(
+                request,
+                max_tokens=profile.max_tokens,
+                temperature=profile.temperature,
+            )
+            latency = int((time.time() - start_engine) * 1000)
+
+        metrics.inc(f"engine_requests_{stored_profile_id}")
+        metrics.observe("latency_ms", latency)
 
         # post response
         latency = int((time.time() - start) * 1000)

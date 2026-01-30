@@ -1,5 +1,3 @@
-print(">>> SERVER.PY LOADED <<<")
-
 import time
 from uuid import uuid4
 from contextlib import asynccontextmanager
@@ -64,9 +62,6 @@ app = FastAPI(
     version=VERSION,
     lifespan=lifespan,
 )
-
-# IMPORTANT: include router AFTER routes are defined
-# (routes are defined below, then router is included at the end)
 
 
 # --------------------------------------------------

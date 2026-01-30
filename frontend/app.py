@@ -1,4 +1,3 @@
-import uuid
 import time
 import requests
 import streamlit as st
@@ -30,13 +29,6 @@ def backend_ready():
         return False
 
 def send_chat(message: str):
-    # payload = {
-    #     "message": message,
-    #     "conversation_id": st.session_state.conversation_id,
-    #     "user_mode": st.session_state.user_mode,
-    #     "privacy_mode": st.session_state.privacy_mode,
-    #     "metadata": {}
-    # }
     payload = {
         "conversation_id": st.session_state.conversation_id,
         "model_profile_id": st.session_state.model_profile_id,
@@ -106,7 +98,7 @@ if now - st.session_state.last_metrics_ts > METRICS_POLL_SEC:
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(
-    page_title="Hybrid AI Chatbot",
+    page_title="CychoB0T",
     layout="wide",
 )
 
@@ -114,7 +106,7 @@ st.set_page_config(
 col1, col2, col3 = st.columns([3, 1, 1])
 
 with col1:
-    st.title("🤖 CychoB0T - Hybrid AI Chatbot")
+    st.title("🤖 CychoB0T")
 
 with col2:
     st.caption("Backend")
