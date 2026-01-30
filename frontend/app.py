@@ -30,13 +30,20 @@ def backend_ready():
         return False
 
 def send_chat(message: str):
+    # payload = {
+    #     "message": message,
+    #     "conversation_id": st.session_state.conversation_id,
+    #     "user_mode": st.session_state.user_mode,
+    #     "privacy_mode": st.session_state.privacy_mode,
+    #     "metadata": {}
+    # }
     payload = {
-        "message": message,
         "conversation_id": st.session_state.conversation_id,
-        "user_mode": st.session_state.user_mode,
-        "privacy_mode": st.session_state.privacy_mode,
-        "metadata": {}
+        "model_profile_id": st.session_state.model_profile_id,
+        "message": message,
+        "privacy_mode": st.session_state.privacy_mode
     }
+
     r = requests.post(
         f"{BACKEND_URL}/chat",
         json=payload,
@@ -54,9 +61,24 @@ def fetch_metrics():
         pass
     return None
 
+def fetch_models():
+    r = requests.get(f"{BACKEND_URL}/models")
+    r.raise_for_status()
+    return r.json()
+
+
 # ---------------- SESSION STATE ----------------
+if "models" not in st.session_state:
+    st.session_state.models = fetch_models()
+
 if "conversation_id" not in st.session_state:
-    st.session_state.conversation_id = str(uuid.uuid4())
+    st.session_state.conversation_id = None
+
+if "model_profile_id" not in st.session_state:
+    st.session_state.model_profile_id = None
+
+if "new_conversation" not in st.session_state:
+    st.session_state.new_conversation = True
 
 if "messages" not in st.session_state:
     st.session_state.messages = []  # UI-only
@@ -115,16 +137,72 @@ with st.sidebar:
     st.header("⚙️ Controls")
 
     st.subheader("Conversation")
-    st.text_input(
-        "Conversation ID",
-        value=st.session_state.conversation_id,
-        disabled=True
-    )
+
+    if st.session_state.new_conversation:
+        profiles = st.session_state.models
+        profile_labels = {p["label"]: p["id"] for p in profiles}
+
+        selected_label = st.selectbox(
+            "Select model profile",
+            list(profile_labels.keys()),
+            key="model_select"
+        )
+
+        create_disabled = not selected_label
+
+        if st.button("Create Conversation", disabled=create_disabled):
+            profile_id = profile_labels[selected_label]
+
+            r = requests.post(
+                f"{BACKEND_URL}/conversations",
+                json={"model_profile_id": profile_id},
+                headers=HEADERS,
+                timeout=10
+            )
+
+            if r.status_code != 200:
+                st.error(r.json().get("detail", "Failed to create conversation"))
+                st.stop()
+
+            data = r.json()
+            st.session_state.conversation_id = data["conversation_id"]
+            st.session_state.model_profile_id = data["model_profile_id"]
+            st.session_state.messages = []
+            st.session_state.new_conversation = False
+            st.rerun()
+
+
+    else:
+        st.text_input(
+            "Conversation ID",
+            value=st.session_state.conversation_id,
+            disabled=True
+        )
 
     if st.button("New Conversation"):
-        st.session_state.conversation_id = str(uuid.uuid4())
+        st.session_state.new_conversation = True
+        st.session_state.conversation_id = None
+        st.session_state.model_profile_id = None
         st.session_state.messages = []
         st.rerun()
+
+    st.divider()
+
+    if "model_profile_id" in st.session_state:
+        active = next(
+            (
+                p for p in st.session_state.models
+                if p["id"] == st.session_state.model_profile_id
+            ),
+            None
+        )
+
+        st.markdown("### Active Model")
+
+        if active:
+            st.info(active["label"])
+        else:
+            st.warning("No active model selected")
 
     st.divider()
 
@@ -214,9 +292,10 @@ for msg in st.session_state.messages:
 
 # Chat input
 user_input = st.chat_input(
-    "Type your message...",
-    disabled=st.session_state.get("generating", False)
+    "Create a conversation to start chatting",
+    disabled=st.session_state.conversation_id is None
 )
+
 
 if user_input is not None and user_input.strip():
     # Append user message (UI-only)

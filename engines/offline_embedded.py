@@ -2,20 +2,26 @@ import time
 from llama_cpp import Llama
 from core.interfaces import LLMEngine
 from core.schemas import ChatRequest, ChatResponse
-from infra.settings import MAX_CONTEXT_CHARS
+from models.profiles import ModelProfile
 
 
 class OfflineLLMEmbedded(LLMEngine):
-    def __init__(self):
+    def __init__(self, active_profile: ModelProfile):
+        self.profile = active_profile
         self.llm = Llama(
-            model_path="models/mistral-7b-instruct-v0.1.Q4_K_M.gguf",
+            model_path=active_profile.model_path,  #"models/mistral-7b-instruct-v0.1.Q4_K_M.gguf",
             n_ctx=4096,
             n_threads=6,
             verbose=False
         )
 
-    def generate(self, request: ChatRequest) -> ChatResponse:
+    def generate(self, request: ChatRequest, profile) -> ChatResponse:
         start = time.time()
+
+        if profile.id != self.profile.id:
+            raise RuntimeError(
+                "Embedded mode requires restart to change model profile"
+            )
 
         prompt = f"<s>[INST] {request.message} [/INST]"
 

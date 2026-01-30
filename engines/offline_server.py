@@ -6,17 +6,17 @@ from infra.settings import OFFLINE_URL, OFFLINE_TIMEOUT
 
 
 class OfflineLLMServer(LLMEngine):
-    def generate(self, request: ChatRequest) -> ChatResponse:
+    def generate(self, request: ChatRequest, profile) -> ChatResponse:
         start = time.time()
 
         payload = {
             "prompt": f"<s>[INST] {request.message} [/INST]",
-            "n_predict": 512,
-            "temperature": 0.7
+            "n_predict": profile.max_tokens,
+            "temperature": profile.temperature,
         }
 
         r = requests.post(
-            OFFLINE_URL,
+            profile.endpoint_url, # OFFLINE_URL
             json=payload,
             timeout=OFFLINE_TIMEOUT
         )

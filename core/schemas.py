@@ -7,6 +7,7 @@ from typing import Dict, Optional
 class ChatRequest(BaseModel):
     message: str
     conversation_id: str
+    model_profile_id: str = "general"
     user_mode: str = "auto"
     privacy_mode: str = "strict"
     metadata: Optional[Dict] = None

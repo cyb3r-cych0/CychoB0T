@@ -10,10 +10,9 @@ from infra.runtime import shutdown_event
 from infra.metrics import metrics
 from infra.audit import log_audit_event
 from infra.sanitize import sanitize_prompt
-from infra.retry import OnlineEngineUnavailable
 from engines.online_llm import OnlineLLM
 from engines.offline_factory import get_offline_engine
-
+from models.registry import get_profile
 
 from infra.settings import (
         MAX_CONCURRENT_REQUESTS,
@@ -36,7 +35,7 @@ from security.pii import redact_pii
 
 class Router:
     def __init__(self):
-        self.offline = get_offline_engine()
+        self.offline = get_offline_engine
         self.online = OnlineLLM()
         self.store = SQLiteMemoryStore()
         self.short = ShortTermMemory()
@@ -58,6 +57,15 @@ class Router:
             self._augment_prompt = augment_prompt
 
     def route(self, request):
+        #validate profile ID
+        try:
+            get_profile(request.model_profile_id)
+        except KeyError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown model profile: {request.model_profile_id}"
+            )
+
         # metrics + shutdown
         metrics.inc("requests_total")
 
@@ -110,8 +118,32 @@ class Router:
                 detail=f"Prompt exceeds {MAX_PROMPT_CHARS} characters"
             )
 
-        # conversation setup
-        self.store.ensure_conversation(request.conversation_id)
+        # Fail if conversation does not exist
+        if not self.store.conversation_exists(request.conversation_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Conversation does not exist. "
+                    "Create it first via POST /conversations."
+                )
+            )
+
+        # conversation setup + validation
+        # self.store.ensure_conversation(
+        #     request.conversation_id,
+        #     request.model_profile_id
+        # )
+        stored_profile_id = self.store.get_model_profile_id(request.conversation_id)
+        profile = get_profile(stored_profile_id)
+
+        if stored_profile_id != request.model_profile_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Model profile is locked for this conversation. "
+                    "Start a new conversation to change models."
+                )
+            )
 
         if self.short.conversation_id != request.conversation_id:
             self.short.reset(request.conversation_id)
@@ -155,12 +187,13 @@ class Router:
         # routing + fallback
         try:
             with self.limiter:
+                offline_engine = self.offline(profile)
                 if (
                     request.user_mode == "offline_only"
                     or not ConnectivityService.is_online()
                 ):
                     try:
-                        response = self.offline.generate(request)
+                        response = offline_engine.generate(request, profile)
                         metrics.inc("engine_offline")
                     except Exception:
                         metrics.inc("errors_total")
@@ -177,7 +210,7 @@ class Router:
                 else:
                     if not self.circuit.allow():
                         try:
-                            response = self.offline.generate(request)
+                            response = offline_engine.generate(request, profile)
                             metrics.inc("engine_offline")
                         except Exception:
                             metrics.inc("errors_total")
@@ -200,7 +233,7 @@ class Router:
                             self.circuit.failure()
                             log_online_fallback("online_engine_unreachable")
                             try:
-                                response = self.offline.generate(request)
+                                response = offline_engine.generate(request, profile)
                                 metrics.inc("engine_offline")
                             except Exception:
                                 metrics.inc("errors_total")

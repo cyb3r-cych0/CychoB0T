@@ -55,18 +55,22 @@ class SQLiteMemoryStore:
         conn = self._get_conn()
         cur = conn.cursor()
 
+        # Conversations table (canonical schema)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
-                id TEXT PRIMARY KEY,
+                conversation_id TEXT PRIMARY KEY,
+                model_profile_id TEXT NOT NULL,
                 created_at DATETIME
             )
         """)
+
+        # Messages table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id TEXT,
-                role TEXT,
-                content TEXT,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
                 engine TEXT,
                 timestamp DATETIME
             )
@@ -75,17 +79,48 @@ class SQLiteMemoryStore:
         conn.commit()
         conn.close()
 
-    def ensure_conversation(self, conversation_id: str):
+    def ensure_conversation(self, conversation_id: str, model_profile_id: str):
+        conn = self._get_conn()
+        cur = conn.cursor()
+
+        # Check if conversation already exists
+        cur.execute(
+            "SELECT model_profile_id FROM conversations WHERE conversation_id = ?",
+            (conversation_id,)
+        )
+        row = cur.fetchone()
+
+        if row is None:
+            # Create new conversation with bound model profile
+            cur.execute(
+                """
+                INSERT INTO conversations (
+                    conversation_id,
+                    model_profile_id,
+                    created_at
+                )
+                VALUES (?, ?, ?)
+                """,
+                (conversation_id, model_profile_id, datetime.now())
+            )
+
+        # If it exists, do NOTHING (model_profile_id is immutable)
+
+        conn.commit()
+        conn.close()
+
+    def conversation_exists(self, conversation_id: str) -> bool:
         conn = self._get_conn()
         cur = conn.cursor()
 
         cur.execute(
-            "INSERT OR IGNORE INTO conversations (id, created_at) VALUES (?, ?)",
-            (conversation_id, datetime.now())
+            "SELECT 1 FROM conversations WHERE conversation_id = ?",
+            (conversation_id,)
         )
+        exists = cur.fetchone() is not None
 
-        conn.commit()
         conn.close()
+        return exists
 
     def add_message(self, conversation_id: str, role: str, content: str, engine: str):
         conn = self._get_conn()
@@ -118,3 +153,14 @@ class SQLiteMemoryStore:
         conn.commit()
         conn.close()
 
+    def get_model_profile_id(self, conversation_id: str) -> str:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT model_profile_id FROM conversations WHERE conversation_id = ?",
+            (conversation_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            raise KeyError(f"Conversation not found: {conversation_id}")
+        return row[0]

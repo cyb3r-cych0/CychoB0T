@@ -1,10 +1,10 @@
 from infra.settings import OFFLINE_BACKEND
 
 
-def get_offline_engine():
+def get_offline_engine(profile):
     if OFFLINE_BACKEND == "embedded":
         from engines.offline_embedded import OfflineLLMEmbedded
-        return OfflineLLMEmbedded()
+        return OfflineLLMEmbedded(profile)
 
     if OFFLINE_BACKEND == "server":
         from engines.offline_server import OfflineLLMServer
